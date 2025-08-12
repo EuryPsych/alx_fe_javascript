@@ -34,6 +34,7 @@
       border-radius: 4px;
       cursor: pointer;
       margin-right: 10px;
+      margin-bottom: 10px;
     }
     button:hover {
       background-color: #45a049;
@@ -51,6 +52,9 @@
       border-radius: 5px;
     }
     .category-filter {
+      margin: 20px 0;
+    }
+    .import-export {
       margin: 20px 0;
     }
   </style>
@@ -71,6 +75,12 @@
   
   <button id="newQuote">Show New Quote</button>
   <button id="showForm">Add New Quote</button>
+  <button id="exportQuotes">Export Quotes</button>
+  
+  <div class="import-export">
+    <input type="file" id="importFile" accept=".json" />
+    <button onclick="importQuotes()">Import Quotes</button>
+  </div>
   
   <div id="addQuoteForm" class="form-container" style="display: none;">
     <h3>Add a New Quote</h3>
