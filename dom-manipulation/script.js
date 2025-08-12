@@ -1,6 +1,9 @@
-// Initial quotes data (will be loaded from localStorage)
+// Initial quotes data
 let quotes = [];
 let currentFilter = 'all';
+let lastSyncTime = null;
+let conflicts = [];
+const SYNC_INTERVAL = 30000; // 30 seconds
 
 // DOM elements
 const quoteDisplay = document.getElementById('quoteDisplay');
@@ -11,6 +14,13 @@ const categoryFilter = document.getElementById('categoryFilter');
 const exportBtn = document.getElementById('exportQuotes');
 const importFile = document.getElementById('importFile');
 const categoryTags = document.getElementById('categoryTags');
+const syncStatus = document.getElementById('syncStatus');
+const syncNowBtn = document.getElementById('syncNow');
+const conflictResolution = document.getElementById('conflictResolution');
+const conflictItems = document.getElementById('conflictItems');
+
+// Server simulation (using JSONPlaceholder)
+const SERVER_URL = 'https://jsonplaceholder.typicode.com/posts';
 
 // Initialize the app
 function init() {
@@ -22,6 +32,7 @@ function init() {
   showFormBtn.addEventListener('click', showForm);
   exportBtn.addEventListener('click', exportQuotes);
   categoryFilter.addEventListener('change', filterQuotes);
+  syncNowBtn.addEventListener('click', syncWithServer);
   
   // Populate categories and restore last filter
   populateCategories();
@@ -29,23 +40,33 @@ function init() {
   
   // Show initial random quote
   showRandomQuote();
+  
+  // Start periodic sync
+  setInterval(syncWithServer, SYNC_INTERVAL);
+  
+  // Initial sync
+  syncWithServer();
 }
 
 // Load quotes from localStorage
 function loadQuotes() {
   const savedQuotes = localStorage.getItem('quotes');
+  const savedSyncTime = localStorage.getItem('lastSyncTime');
+  
   if (savedQuotes) {
     quotes = JSON.parse(savedQuotes);
   } else {
     // Default quotes if none are saved
     quotes = [
-      { text: "The only way to do great work is to love what you do.", category: "work" },
-      { text: "Life is what happens when you're busy making other plans.", category: "life" },
-      { text: "In the middle of difficulty lies opportunity.", category: "inspiration" },
-      { text: "Simplicity is the ultimate sophistication.", category: "design" },
-      { text: "The best way to predict the future is to invent it.", category: "technology" }
+      { id: Date.now(), text: "The only way to do great work is to love what you do.", category: "work", version: 1 },
+      { id: Date.now()+1, text: "Life is what happens when you're busy making other plans.", category: "life", version: 1 },
+      { id: Date.now()+2, text: "In the middle of difficulty lies opportunity.", category: "inspiration", version: 1 }
     ];
     saveQuotes();
+  }
+  
+  if (savedSyncTime) {
+    lastSyncTime = new Date(savedSyncTime);
   }
 }
 
@@ -53,6 +74,7 @@ function loadQuotes() {
 function saveQuotes() {
   localStorage.setItem('quotes', JSON.stringify(quotes));
   localStorage.setItem('lastFilter', currentFilter);
+  localStorage.setItem('lastSyncTime', new Date().toISOString());
 }
 
 // Populate categories dropdown and tags
@@ -159,7 +181,14 @@ function addQuote() {
     return;
   }
   
-  const newQuote = { text, category };
+  const newQuote = { 
+    id: Date.now(), 
+    text, 
+    category, 
+    version: 1,
+    localModified: new Date().toISOString()
+  };
+  
   quotes.push(newQuote);
   
   // Update UI and storage
@@ -167,6 +196,9 @@ function addQuote() {
   populateCategories();
   hideForm();
   showRandomQuote();
+  
+  // Mark that we have unsynced changes
+  localStorage.setItem('hasUnsyncedChanges', 'true');
 }
 
 // Export quotes to JSON file
@@ -203,11 +235,221 @@ function importQuotes() {
       showRandomQuote();
       alert(`Successfully imported ${importedQuotes.length} quotes!`);
       importFile.value = '';
+      
+      // Mark that we have unsynced changes
+      localStorage.setItem('hasUnsyncedChanges', 'true');
     } catch (error) {
       alert('Error importing quotes: ' + error.message);
     }
   };
   reader.readAsText(file);
+}
+
+// Simulate server sync
+async function syncWithServer() {
+  try {
+    showSyncStatus('Syncing with server...', 'sync-info');
+    
+    // Simulate fetching from server
+    const serverResponse = await fetch(SERVER_URL);
+    const serverQuotes = await serverResponse.json();
+    
+    // Transform server response to our format
+    const transformedServerQuotes = serverQuotes.slice(0, 5).map(post => ({
+      id: post.id,
+      text: post.title,
+      category: 'server',
+      version: post.id % 10 + 1, // Simulate versions
+      serverModified: new Date().toISOString()
+    }));
+    
+    // Check for conflicts and updates
+    checkForConflicts(transformedServerQuotes);
+    
+    if (conflicts.length > 0) {
+      showConflicts();
+      showSyncStatus(`${conflicts.length} conflicts detected`, 'sync-conflict');
+    } else {
+      // Merge changes if no conflicts
+      mergeQuotes(transformedServerQuotes);
+      showSyncStatus('Sync completed successfully', 'sync-success');
+    }
+    
+    // Mark sync time
+    lastSyncTime = new Date();
+    localStorage.setItem('lastSyncTime', lastSyncTime.toISOString());
+    localStorage.removeItem('hasUnsyncedChanges');
+    
+  } catch (error) {
+    console.error('Sync failed:', error);
+    showSyncStatus('Sync failed: ' + error.message, 'sync-error');
+  }
+}
+
+// Check for conflicts between local and server quotes
+function checkForConflicts(serverQuotes) {
+  conflicts = [];
+  
+  // Create a map of server quotes for easy lookup
+  const serverQuoteMap = {};
+  serverQuotes.forEach(quote => {
+    serverQuoteMap[quote.id] = quote;
+  });
+  
+  // Check each local quote against server version
+  quotes.forEach(localQuote => {
+    if (serverQuoteMap[localQuote.id]) {
+      const serverQuote = serverQuoteMap[localQuote.id];
+      
+      // If versions differ and both have been modified
+      if (serverQuote.version !== localQuote.version &&
+          (localQuote.localModified || serverQuote.serverModified)) {
+        conflicts.push({
+          id: localQuote.id,
+          local: localQuote,
+          server: serverQuote
+        });
+      }
+    }
+  });
+  
+  // Also check for new quotes from server
+  serverQuotes.forEach(serverQuote => {
+    if (!quotes.some(q => q.id === serverQuote.id)) {
+      conflicts.push({
+        id: serverQuote.id,
+        local: null,
+        server: serverQuote
+      });
+    }
+  });
+}
+
+// Show conflict resolution UI
+function showConflicts() {
+  conflictItems.innerHTML = '';
+  
+  conflicts.forEach(conflict => {
+    const conflictItem = document.createElement('div');
+    conflictItem.className = 'conflict-item';
+    
+    if (conflict.local && conflict.server) {
+      conflictItem.innerHTML = `
+        <p><strong>Conflict detected for quote ID: ${conflict.id}</strong></p>
+        <p>Local version (v${conflict.local.version}): ${conflict.local.text}</p>
+        <p>Server version (v${conflict.server.version}): ${conflict.server.text}</p>
+      `;
+    } else if (conflict.server) {
+      conflictItem.innerHTML = `
+        <p><strong>New quote from server: ID ${conflict.id}</strong></p>
+        <p>${conflict.server.text}</p>
+      `;
+    }
+    
+    conflictItems.appendChild(conflictItem);
+  });
+  
+  conflictResolution.style.display = 'block';
+}
+
+// Resolve conflicts based on user choice
+function resolveConflicts(resolutionType) {
+  switch (resolutionType) {
+    case 'server':
+      // Use server version for all conflicts
+      conflicts.forEach(conflict => {
+        if (conflict.server) {
+          const existingIndex = quotes.findIndex(q => q.id === conflict.id);
+          if (existingIndex >= 0) {
+            quotes[existingIndex] = conflict.server;
+          } else {
+            quotes.push(conflict.server);
+          }
+        }
+      });
+      break;
+      
+    case 'local':
+      // Keep local version for all conflicts
+      // Just update the version number to match server
+      conflicts.forEach(conflict => {
+        if (conflict.local && conflict.server) {
+          const existingIndex = quotes.findIndex(q => q.id === conflict.id);
+          if (existingIndex >= 0) {
+            quotes[existingIndex].version = conflict.server.version;
+          }
+        }
+      });
+      break;
+      
+    case 'merge':
+      // Merge changes - for demo we'll just take the longer text
+      conflicts.forEach(conflict => {
+        if (conflict.local && conflict.server) {
+          const existingIndex = quotes.findIndex(q => q.id === conflict.id);
+          if (existingIndex >= 0) {
+            const mergedQuote = {
+              ...conflict.local,
+              text: conflict.local.text.length > conflict.server.text.length 
+                ? conflict.local.text 
+                : conflict.server.text,
+              version: conflict.server.version + 1
+            };
+            quotes[existingIndex] = mergedQuote;
+          }
+        } else if (conflict.server) {
+          quotes.push(conflict.server);
+        }
+      });
+      break;
+  }
+  
+  // Save and refresh
+  saveQuotes();
+  populateCategories();
+  showRandomQuote();
+  
+  // Hide conflict resolution
+  conflictResolution.style.display = 'none';
+  conflicts = [];
+  
+  showSyncStatus('Conflicts resolved', 'sync-success');
+}
+
+// Merge server quotes with local quotes
+function mergeQuotes(serverQuotes) {
+  // Create a map of local quotes for easy lookup
+  const localQuoteMap = {};
+  quotes.forEach(quote => {
+    localQuoteMap[quote.id] = quote;
+  });
+  
+  // Update or add server quotes
+  serverQuotes.forEach(serverQuote => {
+    if (localQuoteMap[serverQuote.id]) {
+      // Update existing quote if server version is newer
+      if (serverQuote.version > localQuoteMap[serverQuote.id].version) {
+        Object.assign(localQuoteMap[serverQuote.id], serverQuote);
+      }
+    } else {
+      // Add new quote from server
+      quotes.push(serverQuote);
+    }
+  });
+  
+  saveQuotes();
+}
+
+// Show sync status message
+function showSyncStatus(message, type) {
+  syncStatus.textContent = message;
+  syncStatus.className = `sync-status ${type}`;
+  syncStatus.style.display = 'block';
+  
+  // Hide after 5 seconds
+  setTimeout(() => {
+    syncStatus.style.display = 'none';
+  }, 5000);
 }
 
 // Initialize the app when the DOM is loaded

@@ -72,10 +72,41 @@
       background-color: #4CAF50;
       color: white;
     }
+    .sync-status {
+      margin: 10px 0;
+      padding: 10px;
+      border-radius: 4px;
+    }
+    .sync-success {
+      background-color: #dff0d8;
+      color: #3c763d;
+    }
+    .sync-error {
+      background-color: #f2dede;
+      color: #a94442;
+    }
+    .sync-conflict {
+      background-color: #fcf8e3;
+      color: #8a6d3b;
+    }
+    .conflict-resolution {
+      margin-top: 20px;
+      padding: 15px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+    }
+    .conflict-item {
+      margin: 10px 0;
+      padding: 10px;
+      background-color: #f9f9f9;
+      border-radius: 4px;
+    }
   </style>
 </head>
 <body>
   <h1>Dynamic Quote Generator</h1>
+  
+  <div id="syncStatus" class="sync-status" style="display: none;"></div>
   
   <div class="category-filter">
     <label for="categoryFilter">Filter by category:</label>
@@ -92,6 +123,7 @@
   <button id="newQuote">Show New Quote</button>
   <button id="showForm">Add New Quote</button>
   <button id="exportQuotes">Export Quotes</button>
+  <button id="syncNow">Sync Now</button>
   
   <div class="import-export">
     <input type="file" id="importFile" accept=".json" />
@@ -104,6 +136,14 @@
     <input id="newQuoteCategory" type="text" placeholder="Enter quote category" />
     <button onclick="addQuote()">Add Quote</button>
     <button onclick="hideForm()">Cancel</button>
+  </div>
+  
+  <div id="conflictResolution" class="conflict-resolution" style="display: none;">
+    <h3>Conflict Resolution</h3>
+    <div id="conflictItems"></div>
+    <button onclick="resolveConflicts('server')">Use Server Version</button>
+    <button onclick="resolveConflicts('local')">Keep Local Version</button>
+    <button onclick="resolveConflicts('merge')">Merge Changes</button>
   </div>
   
   <script src="script.js"></script>
