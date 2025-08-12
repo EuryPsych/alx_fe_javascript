@@ -1,9 +1,13 @@
-// Initial quotes data
+// Server simulation constants
+const SERVER_URL = 'https://jsonplaceholder.typicode.com/posts';
+const SYNC_INTERVAL = 30000; // 30 seconds
+
+// Global variables
 let quotes = [];
 let currentFilter = 'all';
 let lastSyncTime = null;
 let conflicts = [];
-const SYNC_INTERVAL = 30000; // 30 seconds
+let syncInterval;
 
 // DOM elements
 const quoteDisplay = document.getElementById('quoteDisplay');
@@ -19,9 +23,6 @@ const syncNowBtn = document.getElementById('syncNow');
 const conflictResolution = document.getElementById('conflictResolution');
 const conflictItems = document.getElementById('conflictItems');
 
-// Server simulation (using JSONPlaceholder)
-const SERVER_URL = 'https://jsonplaceholder.typicode.com/posts';
-
 // Initialize the app
 function init() {
   // Load quotes from localStorage
@@ -32,7 +33,7 @@ function init() {
   showFormBtn.addEventListener('click', showForm);
   exportBtn.addEventListener('click', exportQuotes);
   categoryFilter.addEventListener('change', filterQuotes);
-  syncNowBtn.addEventListener('click', syncWithServer);
+  syncNowBtn.addEventListener('click', syncQuotes);
   
   // Populate categories and restore last filter
   populateCategories();
@@ -41,11 +42,8 @@ function init() {
   // Show initial random quote
   showRandomQuote();
   
-  // Start periodic sync
-  setInterval(syncWithServer, SYNC_INTERVAL);
-  
-  // Initial sync
-  syncWithServer();
+  // Initialize sync
+  initSync();
 }
 
 // Load quotes from localStorage
@@ -186,7 +184,8 @@ function addQuote() {
     text, 
     category, 
     version: 1,
-    localModified: new Date().toISOString()
+    localModified: new Date().toISOString(),
+    synced: false
   };
   
   quotes.push(newQuote);
@@ -245,66 +244,130 @@ function importQuotes() {
   reader.readAsText(file);
 }
 
-// Simulate server sync
-async function syncWithServer() {
+// 1. fetchQuotesFromServer - REQUIRED FUNCTION
+async function fetchQuotesFromServer() {
   try {
-    showSyncStatus('Syncing with server...', 'sync-info');
+    const response = await fetch(SERVER_URL);
+    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+    const serverData = await response.json();
     
-    // Simulate fetching from server
-    const serverResponse = await fetch(SERVER_URL);
-    const serverQuotes = await serverResponse.json();
-    
-    // Transform server response to our format
-    const transformedServerQuotes = serverQuotes.slice(0, 5).map(post => ({
+    // Transform to our quote format
+    return serverData.slice(0, 5).map(post => ({
       id: post.id,
       text: post.title,
       category: 'server',
-      version: post.id % 10 + 1, // Simulate versions
+      version: post.id % 10 + 1,
       serverModified: new Date().toISOString()
     }));
+  } catch (error) {
+    console.error('fetchQuotesFromServer failed:', error);
+    showSyncStatus('Failed to fetch from server', 'sync-error');
+    throw error;
+  }
+}
+
+// 2. postQuotesToServer - REQUIRED FUNCTION
+async function postQuotesToServer(quotesToSend) {
+  try {
+    const response = await fetch(SERVER_URL, {
+      method: 'POST',
+      body: JSON.stringify(quotesToSend),
+      headers: {
+        'Content-type': 'application/json; charset=UTF-8',
+      },
+    });
     
-    // Check for conflicts and updates
-    checkForConflicts(transformedServerQuotes);
+    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
     
+    const data = await response.json();
+    return {
+      success: true,
+      data: data,
+      timestamp: new Date().toISOString()
+    };
+  } catch (error) {
+    console.error('postQuotesToServer failed:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+// 3. syncQuotes - REQUIRED FUNCTION
+async function syncQuotes() {
+  try {
+    showSyncStatus('Starting synchronization...', 'sync-info');
+    
+    // Step 1: Fetch quotes from server
+    const serverQuotes = await fetchQuotesFromServer();
+    
+    // Step 2: Get unsynced local quotes
+    const unsyncedQuotes = quotes.filter(q => q.localModified && !q.synced);
+    
+    // Step 3: Push local changes to server
+    if (unsyncedQuotes.length > 0) {
+      const result = await postQuotesToServer(unsyncedQuotes);
+      if (result.success) {
+        // Mark quotes as synced
+        quotes.forEach(q => {
+          if (q.localModified) q.synced = true;
+        });
+        saveQuotes();
+      }
+    }
+    
+    // Step 4: Check for conflicts
+    conflicts = checkForConflicts(serverQuotes);
     if (conflicts.length > 0) {
       showConflicts();
       showSyncStatus(`${conflicts.length} conflicts detected`, 'sync-conflict');
     } else {
-      // Merge changes if no conflicts
-      mergeQuotes(transformedServerQuotes);
+      mergeQuotes(serverQuotes);
       showSyncStatus('Sync completed successfully', 'sync-success');
     }
     
-    // Mark sync time
+    // Update last sync time
     lastSyncTime = new Date();
     localStorage.setItem('lastSyncTime', lastSyncTime.toISOString());
     localStorage.removeItem('hasUnsyncedChanges');
     
   } catch (error) {
-    console.error('Sync failed:', error);
+    console.error('syncQuotes failed:', error);
     showSyncStatus('Sync failed: ' + error.message, 'sync-error');
   }
 }
 
+// Initialize periodic sync
+function initSync() {
+  // Initial sync
+  syncQuotes();
+  
+  // Set up periodic sync
+  syncInterval = setInterval(() => {
+    if (document.visibilityState === 'visible') {
+      syncQuotes();
+    }
+  }, SYNC_INTERVAL);
+  
+  // Also sync when window gains focus
+  window.addEventListener('focus', syncQuotes);
+}
+
 // Check for conflicts between local and server quotes
 function checkForConflicts(serverQuotes) {
-  conflicts = [];
+  const detectedConflicts = [];
   
   // Create a map of server quotes for easy lookup
-  const serverQuoteMap = {};
-  serverQuotes.forEach(quote => {
-    serverQuoteMap[quote.id] = quote;
-  });
+  const serverMap = new Map();
+  serverQuotes.forEach(quote => serverMap.set(quote.id, quote));
   
   // Check each local quote against server version
   quotes.forEach(localQuote => {
-    if (serverQuoteMap[localQuote.id]) {
-      const serverQuote = serverQuoteMap[localQuote.id];
-      
-      // If versions differ and both have been modified
-      if (serverQuote.version !== localQuote.version &&
-          (localQuote.localModified || serverQuote.serverModified)) {
-        conflicts.push({
+    if (serverMap.has(localQuote.id)) {
+      const serverQuote = serverMap.get(localQuote.id);
+      if (serverQuote.version !== localQuote.version) {
+        detectedConflicts.push({
           id: localQuote.id,
           local: localQuote,
           server: serverQuote
@@ -316,16 +379,18 @@ function checkForConflicts(serverQuotes) {
   // Also check for new quotes from server
   serverQuotes.forEach(serverQuote => {
     if (!quotes.some(q => q.id === serverQuote.id)) {
-      conflicts.push({
+      detectedConflicts.push({
         id: serverQuote.id,
         local: null,
         server: serverQuote
       });
     }
   });
+  
+  return detectedConflicts;
 }
 
-// Show conflict resolution UI
+// Show conflicts in UI
 function showConflicts() {
   conflictItems.innerHTML = '';
   
@@ -335,7 +400,7 @@ function showConflicts() {
     
     if (conflict.local && conflict.server) {
       conflictItem.innerHTML = `
-        <p><strong>Conflict detected for quote ID: ${conflict.id}</strong></p>
+        <p><strong>Conflict ID: ${conflict.id}</strong></p>
         <p>Local version (v${conflict.local.version}): ${conflict.local.text}</p>
         <p>Server version (v${conflict.server.version}): ${conflict.server.text}</p>
       `;
@@ -371,7 +436,6 @@ function resolveConflicts(resolutionType) {
       
     case 'local':
       // Keep local version for all conflicts
-      // Just update the version number to match server
       conflicts.forEach(conflict => {
         if (conflict.local && conflict.server) {
           const existingIndex = quotes.findIndex(q => q.id === conflict.id);
@@ -383,7 +447,7 @@ function resolveConflicts(resolutionType) {
       break;
       
     case 'merge':
-      // Merge changes - for demo we'll just take the longer text
+      // Merge changes - for demo we'll take the longer text
       conflicts.forEach(conflict => {
         if (conflict.local && conflict.server) {
           const existingIndex = quotes.findIndex(q => q.id === conflict.id);
@@ -419,17 +483,16 @@ function resolveConflicts(resolutionType) {
 // Merge server quotes with local quotes
 function mergeQuotes(serverQuotes) {
   // Create a map of local quotes for easy lookup
-  const localQuoteMap = {};
-  quotes.forEach(quote => {
-    localQuoteMap[quote.id] = quote;
-  });
+  const localQuoteMap = new Map();
+  quotes.forEach(quote => localQuoteMap.set(quote.id, quote));
   
   // Update or add server quotes
   serverQuotes.forEach(serverQuote => {
-    if (localQuoteMap[serverQuote.id]) {
-      // Update existing quote if server version is newer
-      if (serverQuote.version > localQuoteMap[serverQuote.id].version) {
-        Object.assign(localQuoteMap[serverQuote.id], serverQuote);
+    if (localQuoteMap.has(serverQuote.id)) {
+      const localQuote = localQuoteMap.get(serverQuote.id);
+      // Update if server version is newer
+      if (serverQuote.version > localQuote.version) {
+        Object.assign(localQuote, serverQuote);
       }
     } else {
       // Add new quote from server
